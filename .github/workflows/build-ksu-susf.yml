@@ -1,0 +1,81 @@
+name: Build kernel (KSU-Next + SUSF) for sweet
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build kernel + package AnyKernel3
+    runs-on: ubuntu-latest
+    env:
+      WORKDIR: ${{ runner.workspace }}/work
+      KERNEL_DIR: ${{ github.workspace }}
+      KERNEL_BRANCH: zelo-13
+      DEFCONFIG: vendor_sweet_defconfig
+      OUT: ${{ runner.workspace }}/work/out
+      ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
+      KSU_REPO: https://github.com/KernelSU-Next/KernelSU-Next.git
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      SUSFS_USERMODE_REPO: https://github.com/sidex15/susfs4ksu-module.git
+      # === IMPORTANT: set this to a direct downloadable prebuilt clang tarball URL ===
+      CLANG_TARBALL_URL: https://github.com/kdrag0n/proton-clang/releases/download/20210410/proton-clang-20210410-aarch64.tar.xz
+    steps:
+      - name: Checkout kernel (your fork)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bc bison build-essential flex libncurses5-dev libssl-dev cpio unzip rsync python3 python3-distutils git zip wget
+
+      - name: Prepare workspace
+        run: |
+          mkdir -p "${WORKDIR}"
+          cd "${WORKDIR}"
+          git clone --depth=1 "${{ env.KSU_REPO }}" kernelsu-next || true
+          git clone --depth=1 "${{ env.SUSFS_REPO }}" susfs || true
+          git clone --depth=1 "${{ env.SUSFS_USERMODE_REPO }}" susfs-usermode || true
+          git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" anykernel || true
+
+      - name: Download and extract Clang toolchain
+        run: |
+          mkdir -p "${WORKDIR}/clang"
+          cd "${WORKDIR}/clang"
+          echo "Downloading clang from ${CLANG_TARBALL_URL}"
+          wget -q --show-progress -O clang.tar.xz "${CLANG_TARBALL_URL}"
+          tar -xf clang.tar.xz --strip-components=1
+          ls -l
+
+      - name: Copy helper scripts into workspace
+        run: |
+          mkdir -p "${WORKDIR}/scripts"
+          cp -v "${{ github.workspace }}/scripts/fetch_prepare.sh" "${WORKDIR}/scripts/" || true
+          cp -v "${{ github.workspace }}/scripts/apply_kernelsu.sh" "${WORKDIR}/scripts/" || true
+          cp -v "${{ github.workspace }}/scripts/build_and_package.sh" "${WORKDIR}/scripts/" || true
+          chmod +x "${WORKDIR}/scripts/"*.sh || true
+
+      - name: Run fetch/prepare (optional)
+        run: |
+          cd "${WORKDIR}"
+          bash scripts/fetch_prepare.sh "${WORKDIR}" || true
+
+      - name: Apply KernelSU + SUSF integration
+        run: |
+          cd "${WORKDIR}"
+          bash "${WORKDIR}/scripts/apply_kernelsu.sh" "${KERNEL_DIR}" "${WORKDIR}" || exit 1
+
+      - name: Build kernel and package AnyKernel zip
+        env:
+          PATH: ${{ env.WORKDIR }}/clang/bin:$PATH
+        run: |
+          cd "${WORKDIR}"
+          bash "${WORKDIR}/scripts/build_and_package.sh" "${KERNEL_DIR}" "${WORKDIR}" || exit 1
+
+      - name: Upload artifact (AnyKernel zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-sweet-ksu-susf
+          path: |
+            ${WORKDIR}/AnyKernel3-sweet-ksu-susf.zip
